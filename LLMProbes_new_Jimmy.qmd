@@ -1056,7 +1056,7 @@ inceptionViz = {
 }
 ```
 
-**The probe reveals:** The first 64 layers are **completely dead** — flat high error. The skip connection let the model bypass them entirely. Without probes, this failure would be invisible from the final loss alone.
+**The probe reveals:** The auxilliary heads are ahead of the main blocks slightly (Leading Training). Deeper layer gets improved first and shallower layer gets gradually improved backwards. 
 
 
 ## Practical Concerns {.smaller}
@@ -1227,7 +1227,6 @@ extensionViz = {
     "ResNet-101, ResNet-151, VGG-16, VGG-19",
     "RNNs and sequence models",
     "GANs and adversarial examples",
-    "Actively discouraging linear separability",
   ];
   futures.forEach((f,i) => {
     svg.append("text").attr("x",W/2).attr("y",295+i*20)
@@ -1909,10 +1908,11 @@ promptViz = {
 
 **What they tested:**
 
-- **empty:** just the headline text
+- **empty_w_period:** just the headline text + "."
 - **empty_wo_period:** headline without period, last token
 - **when_w_period:** "When was this published?" + headline + "."
 - **when_wo_period:** "When was this published?" + headline
+- **random:** 10 random tokens prepended + headline
 
 **What this suggests:**
 
@@ -1944,7 +1944,7 @@ periodViz = {
   const prompts = [
     {label:"when + period", r2:0.72, token:"probe on '.'"},
     {label:"empty + period", r2:0.70, token:"probe on '.'"},
-    {label:"empty", r2:0.65, token:"probe on last word"},
+    {label:"empty (no period)", r2:0.65, token:"probe on last word"},
     {label:"when (no period)", r2:0.62, token:"probe on last word"},
     {label:"random", r2:0.42, token:"probe on last word"},
   ];
