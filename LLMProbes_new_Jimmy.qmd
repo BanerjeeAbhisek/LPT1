@@ -69,11 +69,13 @@ resources:
 
 <div class="toc-card">
 
-1. [Motivation](#motivation)  
-2. [Model Setup](#model-setup)  
-3. [Method](#method)  
-4. [Results](#results)  
-5. [Conclusion](#conclusion)
+1. [**Alain & Bengio (2016)** — Inventing the Probe](#the-black-box-problem)
+
+2. [**Gurnee & Tegmark (2024)** — LLMs Represent Space and Time](#from-vision-probes-to-llm-probes)
+
+3. [**Belinkov (2022)** — A Critical Look at Probing](#a-critical-look-at-probing-belinkov-2022)
+
+4. [**DINOv3** — Probing Vision Foundation Models](#from-nlp-to-vision-dinov3)
 
 </div>
 
@@ -3091,6 +3093,2176 @@ takeawayViz = {
 
 
 
+
+## A Critical Look at Probing — Belinkov (2022) {.smaller}
+
+Alain & Bengio gave us probes. Gurnee & Tegmark showed they reveal real structure. But **how reliable is the framework itself?**
+
+Belinkov (2022) provides a critical review: **Promises, Shortcomings, and Advances.**
+
+::: {.columns}
+::: {.column width="50%"}
+
+**The core question:**
+
+When a probe gets 87.8% accuracy, what does that actually mean?
+
+- Does the model **encode** the property?
+- Is the property **easily extractable**?
+- Does the model **use** the property?
+
+These are **three different claims** — probing alone can't distinguish them.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+belinkovIntro = {
+  const W = 440, H = 320;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Three Levels of Interpretation");
+
+  const levels = [
+    {y:70, label:"Property is encoded", icon:"📦", desc:"Info exists somewhere in the representation"},
+    {y:140, label:"Property is extractable", icon:"🔑", desc:"A simple probe can recover it"},
+    {y:210, label:"Property is used", icon:"⚙️", desc:"Model actually relies on it for predictions"},
+  ];
+
+  levels.forEach((l,i) => {
+    const t = i / (levels.length-1);
+    const fill = d3.interpolateRgb(MZgold, MZblack)(t);
+
+    svg.append("rect").attr("x",60).attr("y",l.y-18).attr("width",320).attr("height",36).attr("rx",6)
+      .attr("fill",fill).attr("opacity",0.85);
+    svg.append("text").attr("x",90).attr("y",l.y-1)
+      .attr("dominant-baseline","middle")
+      .attr("fill", t < 0.5 ? MZblack : MZgold).attr("font-size",11).attr("font-weight",600)
+      .text(l.label);
+    svg.append("text").attr("x",38).attr("y",l.y+2)
+      .attr("text-anchor","middle").attr("font-size",22).text(l.icon);
+    svg.append("text").attr("x",W/2).attr("y",l.y+26)
+      .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+      .text(l.desc);
+
+    if(i < levels.length-1){
+      svg.append("line").attr("x1",W/2).attr("y1",l.y+18).attr("x2",W/2).attr("y2",levels[i+1].y-18)
+        .attr("stroke",MZdkGold).attr("stroke-width",1.5).attr("stroke-dasharray","4,3");
+      svg.append("text").attr("x",W/2+10).attr("y",(l.y+18+levels[i+1].y-18)/2)
+        .attr("dominant-baseline","middle").attr("font-size",16).attr("fill",MZdkGold).text("↓");
+    }
+  });
+
+  // Animated bracket showing "Probes test this"
+  const bracketX = 395;
+  svg.append("line").attr("x1",bracketX).attr("y1",70-18).attr("x2",bracketX).attr("y2",140+18)
+    .attr("stroke",MZgold).attr("stroke-width",2);
+  svg.append("line").attr("x1",bracketX).attr("y1",70-18).attr("x2",bracketX-8).attr("y2",70-18)
+    .attr("stroke",MZgold).attr("stroke-width",2);
+  svg.append("line").attr("x1",bracketX).attr("y1",140+18).attr("x2",bracketX-8).attr("y2",140+18)
+    .attr("stroke",MZgold).attr("stroke-width",2);
+
+  const bracketLabel = svg.append("text").attr("x",bracketX+6).attr("y",105)
+    .attr("font-size",8).attr("fill",MZdkGold).attr("font-weight",600)
+    .attr("transform",`rotate(90,${bracketX+6},105)`).text("Probes test these");
+
+  // Pulsing question mark on "used"
+  const qMark = svg.append("text").attr("x",bracketX).attr("y",210)
+    .attr("text-anchor","middle").attr("font-size",20).attr("fill",MZgold).attr("font-weight",700).text("?");
+
+  let frame = 0;
+  function pulse(){
+    frame++;
+    const op = 0.3 + 0.7*Math.abs(Math.sin(frame*0.03));
+    qMark.attr("opacity", op);
+    requestAnimationFrame(pulse);
+  }
+  pulse();
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## The Formal Framework {.smaller}
+
+Belinkov formalizes probing as a system of interacting components — each choice affects what conclusions you can draw.
+
+```{ojs}
+//| echo: false
+frameworkViz = {
+  const W = 920, H = 420;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Probing Classifiers Framework (Belinkov, Figure 1)");
+
+  // LEFT: Basic Components
+  svg.append("text").attr("x",230).attr("y",50)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("(a) Basic Components");
+
+  const basic = [
+    {sym:"f : x → ŷ", desc:"Original model", y:80},
+    {sym:"D_O = {x, y}", desc:"Original dataset", y:115},
+    {sym:"f_l(x)", desc:"Representations at layer l", y:150},
+    {sym:"g : f_l(x) → ẑ", desc:"Probing classifier", y:185},
+    {sym:"D_P = {x, z}", desc:"Probing dataset", y:220},
+    {sym:"PERF(g, f, D_O, D_P)", desc:"Probing performance", y:255},
+  ];
+
+  basic.forEach((b,i) => {
+    svg.append("rect").attr("x",30).attr("y",b.y-14).attr("width",180).attr("height",28).attr("rx",5)
+      .attr("fill", i<3 ? MZblack : MZgold).attr("opacity",0.85);
+    svg.append("text").attr("x",120).attr("y",b.y)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", i<3 ? MZgold : MZblack).attr("font-size",10).attr("font-weight",600).attr("font-family","monospace")
+      .text(b.sym);
+    svg.append("text").attr("x",220).attr("y",b.y)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZgray)
+      .text(b.desc);
+  });
+
+  // Arrows between basic components
+  for(let i=0;i<basic.length-1;i++){
+    svg.append("line").attr("x1",120).attr("y1",basic[i].y+14).attr("x2",120).attr("y2",basic[i+1].y-14)
+      .attr("stroke",MZdkGold).attr("stroke-width",1).attr("stroke-dasharray","3,2");
+  }
+
+  // RIGHT: Additional Components (controls & advances)
+  svg.append("text").attr("x",690).attr("y",50)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("(b) Controls & Advances");
+
+  const advanced = [
+    {sym:"f̄ (skyline)", desc:"Upper bound model", y:80, color:"#2d8a4e"},
+    {sym:"f̲ (baseline)", desc:"Random / majority", y:115, color:"#2d8a4e"},
+    {sym:"Control task", desc:"Random labels (Hewitt & Liang)", y:150, color:"#1971c2"},
+    {sym:"Control dataset", desc:"Non-discriminative z (Ravichander)", y:185, color:"#1971c2"},
+    {sym:"SEL (selectivity)", desc:"Acc. − Control acc.", y:220, color:"#c0392b"},
+    {sym:"MDL", desc:"Min description length (Voita & Titov)", y:255, color:"#c0392b"},
+    {sym:"Intervention", desc:"Modify f̃_l(x), measure effect", y:290, color:"#8e44ad"},
+  ];
+
+  advanced.forEach((a,i) => {
+    svg.append("rect").attr("x",500).attr("y",a.y-14).attr("width",180).attr("height",28).attr("rx",5)
+      .attr("fill",a.color).attr("opacity",0.15).attr("stroke",a.color);
+    svg.append("text").attr("x",590).attr("y",a.y)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill",MZblack).attr("font-size",9).attr("font-weight",600)
+      .text(a.sym);
+    svg.append("text").attr("x",690).attr("y",a.y)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZgray)
+      .text(a.desc);
+  });
+
+  // Connecting arrows from basic to advanced
+  const connections = [
+    {from:255, to:220, label:"compare"},
+    {from:255, to:255, label:"complexity"},
+    {from:150, to:290, label:"intervene"},
+  ];
+
+  svg.append("line").attr("x1",310).attr("y1",255).attr("x2",490).attr("y2",220)
+    .attr("stroke",MZdkGold).attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
+  svg.append("line").attr("x1",310).attr("y1",255).attr("x2",490).attr("y2",255)
+    .attr("stroke",MZdkGold).attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
+  svg.append("line").attr("x1",330).attr("y1",150).attr("x2",490).attr("y2",290)
+    .attr("stroke","#8e44ad").attr("stroke-width",1.5).attr("stroke-dasharray","5,3");
+
+  // Bottom summary
+  svg.append("text").attr("x",W/2).attr("y",340)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZblack).attr("font-weight",600)
+    .text("Key insight: PERF(g, f, D_O, D_P) depends on ALL of these choices — not just the model f.");
+
+  svg.append("text").attr("x",W/2).attr("y",365)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
+    .text("Without proper controls, high probe accuracy could come from the probe itself, not the model.");
+
+  // Animated highlight cycling through the advanced components
+  const highlight = svg.append("rect").attr("width",186).attr("height",34).attr("rx",7)
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",2.5).attr("opacity",0);
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 350;
+    const idx = Math.floor((frame % period) / (period/advanced.length));
+    const a = advanced[Math.min(idx, advanced.length-1)];
+    highlight.attr("x",497).attr("y",a.y-17).attr("opacity",0.8);
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+
+## Shortcoming 1: Comparisons & Controls {.smaller}
+
+**Problem:** Without baselines, probe accuracy is meaningless. Even **random representations** can achieve surprisingly high accuracy.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Hewitt & Liang (2019) — Selectivity:**
+
+Propose a **control task** with random labels:
+
+$$\text{Selectivity} = \text{Acc}(\text{real task}) - \text{Acc}(\text{control task})$$
+
+A good probe should have **high selectivity** — it succeeds on the real task but fails on random labels.
+
+**Ravichander et al. (2021) — Control Datasets:**
+
+Create datasets where property $z$ is **not discriminative** for the task. If the probe still finds $z$, that's incidental — not causal.
+
+**Pimentel et al. (2020) — Control Functions:**
+
+Measure information gain relative to a control function $c$:
+
+$$G(z, h, c) = I(z; h) - I(z; c(h))$$
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+selectivityViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Selectivity: Why Controls Matter");
+
+  // Two scenarios
+  const scenarios = [
+    {label:"Good Probe (High Selectivity)", y0:50, real:0.92, control:0.55, good:true},
+    {label:"Bad Probe (Low Selectivity)", y0:195, real:0.88, control:0.82, good:false},
+  ];
+
+  const bx0 = 140, bx1 = W - 80;
+  const barH = 26;
+  const xS = d3.scaleLinear().domain([0,1]).range([bx0, bx1]);
+
+  // Grid
+  [0,0.2,0.4,0.6,0.8,1.0].forEach(v => {
+    svg.append("line").attr("x1",xS(v)).attr("y1",40).attr("x2",xS(v)).attr("y2",H-20)
+      .attr("stroke","#eee");
+  });
+
+  scenarios.forEach((s,si) => {
+    svg.append("text").attr("x",W/2).attr("y",s.y0)
+      .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).attr("font-weight",700)
+      .text(s.label);
+
+    // Real task bar
+    const ry = s.y0+18;
+    svg.append("rect").attr("x",bx0).attr("y",ry).attr("width",xS(s.real)-bx0).attr("height",barH).attr("rx",3)
+      .attr("fill", s.good ? MZgold : MZgold).attr("opacity",0.8);
+    svg.append("text").attr("x",bx0-6).attr("y",ry+barH/2+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Real task");
+    svg.append("text").attr("x",xS(s.real)+6).attr("y",ry+barH/2+1)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600)
+      .text(s.real.toFixed(2));
+
+    // Control task bar
+    const cy = s.y0+52;
+    svg.append("rect").attr("x",bx0).attr("y",cy).attr("width",xS(s.control)-bx0).attr("height",barH).attr("rx",3)
+      .attr("fill",MZblack).attr("opacity",0.7);
+    svg.append("text").attr("x",bx0-6).attr("y",cy+barH/2+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text("Control");
+    svg.append("text").attr("x",xS(s.control)+6).attr("y",cy+barH/2+1)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZgray).attr("font-weight",600)
+      .text(s.control.toFixed(2));
+
+    // Selectivity bracket
+    const selVal = s.real - s.control;
+    const midY = (ry+barH/2 + cy+barH/2) / 2;
+    svg.append("text").attr("x",xS(Math.max(s.real,s.control))+30).attr("y",midY)
+      .attr("dominant-baseline","middle").attr("font-size",10)
+      .attr("fill", s.good ? "#2d8a4e" : "#c0392b").attr("font-weight",700)
+      .text("Δ = " + selVal.toFixed(2));
+
+    // Verdict
+    svg.append("text").attr("x",W/2).attr("y",cy+barH+18)
+      .attr("text-anchor","middle").attr("font-size",9)
+      .attr("fill", s.good ? "#2d8a4e" : "#c0392b").attr("font-weight",600)
+      .text(s.good ? "✓ Probe reveals real structure" : "✗ Probe may be memorizing — not informative");
+  });
+
+  // X axis
+  [0,0.2,0.4,0.6,0.8,1.0].forEach(v => {
+    svg.append("text").attr("x",xS(v)).attr("y",H-8).attr("text-anchor","middle")
+      .attr("font-size",8).attr("fill",MZgray).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",(bx0+bx1)/2).attr("y",H-1).attr("text-anchor","middle")
+    .attr("font-size",8).attr("fill",MZgray).text("Accuracy →");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Shortcoming 2: Which Classifier? {.smaller}
+
+**Problem:** A powerful probe might decode information that the model doesn't actually use — the probe itself does the computation.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**The expressivity dilemma:**
+
+- **Simple probes** (linear) may miss real structure
+- **Complex probes** (MLP) may "create" structure that isn't there
+
+**Hewitt & Liang:** Advocate for simple linear probes, but even linear probes can memorize with high-dimensional inputs.
+
+**Voita & Titov (2020) — MDL Probes:**
+
+Use **Minimum Description Length** to measure how compressible the labels are given the representations:
+
+$$\text{MDL}(g, f, D_O, D_P)$$
+
+Lower MDL = information is more **easily extractable** (not just present).
+
+**Parameter-free alternatives:** RSA (Representational Similarity Analysis), CKA, DirectProbe — avoid the classifier choice entirely.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+classifierViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Probe Complexity Trade-off");
+
+  // X axis: probe complexity, Y axis: what we learn
+  const padL = 60, padR = 30, padT = 50, padB = 60;
+  const xS = d3.scaleLinear().domain([0,1]).range([padL, W-padR]);
+  const yS = d3.scaleLinear().domain([0,1]).range([H-padB, padT]);
+
+  // Axes
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",W-padR).attr("y2",H-padB).attr("stroke",MZgray);
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",padL).attr("y2",padT).attr("stroke",MZgray);
+
+  svg.append("text").attr("x",(padL+W-padR)/2).attr("y",H-15)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).text("Probe complexity →");
+  svg.append("text").attr("x",18).attr("y",(padT+H-padB)/2)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,18,${(padT+H-padB)/2})`).text("Accuracy");
+
+  // Two curves: real structure + memorization
+  const nPts = 100;
+  const lineFn = d3.line().curve(d3.curveBasis);
+
+  // Real structure (saturates early)
+  const realPts = d3.range(nPts).map(i => {
+    const t = i/(nPts-1);
+    const v = 0.85 * (1 - Math.exp(-5*t));
+    return [xS(t), yS(v)];
+  });
+
+  // Memorization (keeps climbing)
+  const memPts = d3.range(nPts).map(i => {
+    const t = i/(nPts-1);
+    const v = 0.3*t + 0.5*t*t;
+    return [xS(t), yS(Math.min(v, 0.95))];
+  });
+
+  svg.append("path").attr("d",lineFn(realPts))
+    .attr("fill","none").attr("stroke",MZgold).attr("stroke-width",2.5);
+  svg.append("path").attr("d",lineFn(memPts))
+    .attr("fill","none").attr("stroke",MZblack).attr("stroke-width",2).attr("stroke-dasharray","6,3");
+
+  // Labels
+  svg.append("text").attr("x",xS(0.85)).attr("y",yS(0.83)-10)
+    .attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600).text("Real structure");
+  svg.append("text").attr("x",xS(0.85)).attr("y",yS(0.55)+14)
+    .attr("font-size",9).attr("fill",MZgray).attr("font-weight",600).text("Memorization risk");
+
+  // Sweet spot
+  const sweetIdx = Math.floor(0.2 * (nPts-1));
+  svg.append("circle").attr("cx",realPts[sweetIdx][0]).attr("cy",realPts[sweetIdx][1]).attr("r",8)
+    .attr("fill","none").attr("stroke","#2d8a4e").attr("stroke-width",2);
+  svg.append("text").attr("x",xS(0.2)).attr("y",yS(0.65)+18)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill","#2d8a4e").attr("font-weight",600)
+    .text("Sweet spot: linear probe");
+
+  // Probe types along x-axis
+  const probes = [
+    {x:0.1, label:"Linear"},
+    {x:0.35, label:"1-layer MLP"},
+    {x:0.65, label:"Deep MLP"},
+    {x:0.9, label:"Full network"},
+  ];
+  probes.forEach(p => {
+    svg.append("text").attr("x",xS(p.x)).attr("y",H-padB+14).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZgray).text(p.label);
+  });
+
+  // Animated dot on real curve
+  const dot = svg.append("circle").attr("r",5).attr("fill",MZgold).attr("stroke",MZdkGold);
+  let frame = 0;
+  function anim(){
+    frame++;
+    const t = ((frame % 300) / 300);
+    const idx = Math.floor(t * (nPts-1));
+    dot.attr("cx",realPts[idx][0]).attr("cy",realPts[idx][1]);
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Shortcoming 3: Correlation ≠ Causation {.smaller}
+
+**Problem:** High probe accuracy shows information **exists** in representations — not that the model **uses** it.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**The mismatch:**
+
+Several studies found that probe performance $\text{PERF}(g)$ does **not** correlate with model performance $\text{PERF}(f)$:
+
+- A property can be easily probed but **not used** by the model
+- Removing a property may **not affect** model output
+
+**Interventionist approaches:**
+
+- **Giulianelli et al.:** Use probe gradients to modify $\tilde{f}_l(x)$ → measure effect on both probe and model
+- **Elazar et al.:** Project out property $z$ from representations → check if model performance drops
+- **Feder et al.:** Adversarial removal of $z$ while controlling for $z_C$
+
+**Mixed conclusions:** Giulianelli finds probes identify used features; Elazar finds they sometimes don't.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+causalViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+  const red = "#c0392b", green = "#2d8a4e";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("From Correlation to Causation");
+
+  // === LEFT SIDE: Correlational ===
+  const lx = 120, ly = 90;
+
+  // Model f box
+  svg.append("rect").attr("x",lx-50).attr("y",ly-18).attr("width",100).attr("height",36).attr("rx",6)
+    .attr("fill",MZblack).attr("stroke",MZgold);
+  svg.append("text").attr("x",lx).attr("y",ly+1).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",10).attr("font-weight",600)
+    .text("Model f");
+
+  // Probe g box
+  svg.append("rect").attr("x",lx-50).attr("y",ly+50).attr("width",100).attr("height",36).attr("rx",6)
+    .attr("fill",MZgold).attr("stroke",MZdkGold);
+  svg.append("text").attr("x",lx).attr("y",ly+69).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZblack).attr("font-size",10).attr("font-weight",600)
+    .text("Probe g");
+
+  // Red arrow: Model f → Probe g (observation only)
+  svg.append("line").attr("x1",lx).attr("y1",ly+18).attr("x2",lx).attr("y2",ly+46)
+    .attr("stroke",red).attr("stroke-width",2);
+  svg.append("polygon")
+    .attr("points",`${lx-5},${ly+42} ${lx+5},${ly+42} ${lx},${ly+50}`)
+    .attr("fill",red);
+  svg.append("text").attr("x",lx+10).attr("y",ly+35)
+    .attr("font-size",8).attr("fill",red).attr("font-weight",600).text("reads f_l(x)");
+
+  // Labels
+  svg.append("text").attr("x",lx).attr("y",ly+110).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).text("Observes only");
+  svg.append("text").attr("x",lx).attr("y",ly+125).attr("text-anchor","middle")
+    .attr("font-size",10).attr("fill",red).attr("font-weight",600).text("Correlation");
+
+  // === RIGHT SIDE: Causal ===
+  const rx = 330, ry = 90;
+
+  // Model f box
+  svg.append("rect").attr("x",rx-50).attr("y",ry-18).attr("width",100).attr("height",36).attr("rx",6)
+    .attr("fill",MZblack).attr("stroke",MZgold);
+  svg.append("text").attr("x",rx).attr("y",ry+1).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",10).attr("font-weight",600)
+    .text("Model f");
+
+  // Probe g box
+  svg.append("rect").attr("x",rx-50).attr("y",ry+50).attr("width",100).attr("height",36).attr("rx",6)
+    .attr("fill",MZgold).attr("stroke",MZdkGold);
+  svg.append("text").attr("x",rx).attr("y",ry+69).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill",MZblack).attr("font-size",10).attr("font-weight",600)
+    .text("Probe g");
+
+  // Arrow 1 (down): Model f → Probe g (same read as left side)
+  const downX = rx - 15;
+  svg.append("line").attr("x1",downX).attr("y1",ry+18).attr("x2",downX).attr("y2",ry+46)
+    .attr("stroke",MZdkGold).attr("stroke-width",2);
+  svg.append("polygon")
+    .attr("points",`${downX-5},${ry+42} ${downX+5},${ry+42} ${downX},${ry+50}`)
+    .attr("fill",MZdkGold);
+
+  // Arrow 2 (up): Probe g → Model f (intervention)
+  const upX = rx + 15;
+  svg.append("line").attr("x1",upX).attr("y1",ry+50).attr("x2",upX).attr("y2",ry+22)
+    .attr("stroke",green).attr("stroke-width",2.5);
+  svg.append("polygon")
+    .attr("points",`${upX-5},${ry+22} ${upX+5},${ry+22} ${upX},${ry+18}`)
+    .attr("fill",green);
+
+  // Labels for right arrows
+  svg.append("text").attr("x",downX-8).attr("y",ry+35)
+    .attr("text-anchor","end").attr("font-size",8).attr("fill",MZdkGold).text("reads f_l(x)");
+  svg.append("text").attr("x",upX+8).attr("y",ry+35)
+    .attr("font-size",8).attr("fill",green).attr("font-weight",600).text("modifies f̃_l(x)");
+
+  // Labels
+  svg.append("text").attr("x",rx).attr("y",ry+110).attr("text-anchor","middle")
+    .attr("font-size",9).attr("fill",MZgray).text("Intervenes & measures");
+  svg.append("text").attr("x",rx).attr("y",ry+125).attr("text-anchor","middle")
+    .attr("font-size",10).attr("fill",green).attr("font-weight",600).text("Causation");
+
+  // === UPGRADE ARROW between sides ===
+  svg.append("line").attr("x1",190).attr("y1",160).attr("x2",258).attr("y2",160)
+    .attr("stroke",MZdkGold).attr("stroke-width",2);
+  svg.append("polygon")
+    .attr("points","255,155 255,165 265,160")
+    .attr("fill",MZdkGold);
+  svg.append("text").attr("x",225).attr("y",150)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("upgrade");
+
+  // === BOTTOM: Gurnee & Tegmark ===
+  svg.append("rect").attr("x",60).attr("y",265).attr("width",320).attr("height",50).attr("rx",8)
+    .attr("fill","rgba(253,183,25,0.12)").attr("stroke",MZdkGold);
+  svg.append("text").attr("x",W/2).attr("y",283)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+    .text("Gurnee & Tegmark did both: probes (correlational)");
+  svg.append("text").attr("x",W/2).attr("y",300)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("+ neuron ablation (causal) — following Belinkov's advice!");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Shortcoming 4: Datasets vs. Tasks {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Problem:** Probing aims to study **tasks**, but in practice uses **finite datasets** — and the two are not the same.
+
+**Dataset confounds:**
+
+- Models $f$ are typically trained on **different** datasets $D_O$, so comparing models confounds architecture with data
+- The effect of probing dataset $D_P$ — its size, composition, balance — is **rarely studied**
+- Zhang et al. (2021) found models need **less data** for syntax/semantics than for commonsense knowledge
+
+**What should we control?**
+
+- Compare different architectures $\{f_i\}$ trained on the **same** $D_O$
+- Or same $f$ trained on **different** $\{D_O^i\}$
+- Test on multiple probing datasets for the same property $z$
+
+Most studies don't do this — conclusions about "models" are often really conclusions about "models + their training data."
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+datasetViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Confounding Problem");
+
+  // Show two paths: what we want vs what we get
+  // Ideal: isolate model effect
+  svg.append("text").attr("x",W/2).attr("y",50)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill","#2d8a4e").attr("font-weight",700)
+    .text("✓ What we want: isolate model effect");
+
+  const idealModels = ["BERT","GPT-2","LSTM"];
+  idealModels.forEach((m,i) => {
+    const x = 80 + i*140;
+    svg.append("rect").attr("x",x-35).attr("y",65).attr("width",70).attr("height",28).attr("rx",5)
+      .attr("fill",MZblack).attr("stroke",MZgold);
+    svg.append("text").attr("x",x).attr("y",80).attr("text-anchor","middle")
+      .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",9).attr("font-weight",600)
+      .text(m);
+  });
+  svg.append("rect").attr("x",W/2-60).attr("y",105).attr("width",120).attr("height",22).attr("rx",4)
+    .attr("fill","#2d8a4e").attr("opacity",0.2).attr("stroke","#2d8a4e");
+  svg.append("text").attr("x",W/2).attr("y",117).attr("text-anchor","middle")
+    .attr("font-size",8).attr("fill","#2d8a4e").attr("font-weight",600).text("Same D_O for all");
+
+  // Reality: confounded
+  svg.append("text").attr("x",W/2).attr("y",155)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill","#c0392b").attr("font-weight",700)
+    .text("✗ What we get: model + data confounded");
+
+  const realModels = [
+    {name:"BERT", data:"BookCorpus"},
+    {name:"GPT-2", data:"WebText"},
+    {name:"LSTM", data:"WikiText"},
+  ];
+  realModels.forEach((m,i) => {
+    const x = 80 + i*140;
+    svg.append("rect").attr("x",x-45).attr("y",170).attr("width",90).attr("height",28).attr("rx",5)
+      .attr("fill",MZblack).attr("stroke",MZgold);
+    svg.append("text").attr("x",x).attr("y",185).attr("text-anchor","middle")
+      .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",9).attr("font-weight",600)
+      .text(m.name);
+    svg.append("rect").attr("x",x-45).attr("y",205).attr("width",90).attr("height",20).attr("rx",4)
+      .attr("fill","#c0392b").attr("opacity",0.15).attr("stroke","#c0392b");
+    svg.append("text").attr("x",x).attr("y",216).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill","#c0392b").text(m.data);
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",248)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("Is BERT better because of architecture or training data?");
+
+  // Bottom note
+  svg.append("rect").attr("x",30).attr("y",268).attr("width",W-60).attr("height",50).attr("rx",8)
+    .attr("fill","rgba(253,183,25,0.12)").attr("stroke",MZdkGold);
+  svg.append("text").attr("x",W/2).attr("y",286)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+    .text("Gurnee & Tegmark addressed this well:");
+  svg.append("text").attr("x",W/2).attr("y",303)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZdkGold)
+    .text("Tested Llama-2 (7B/13B/70B) + Pythia (160M–6.9B) — same architecture, different scales");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Shortcoming 5: Properties Must Be Pre-defined {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Problem:** Probing requires choosing property $z$ **in advance** — you can only find what you look for.
+
+**Limitations:**
+
+- Constrained to **existing annotated datasets** (mostly English, certain properties)
+- Requires **prior expectations** about what's relevant — potentially biasing conclusions
+- May miss **unexpected structure** the model has learned
+
+**Partial solutions:**
+
+- Michael, Botha & Tenney (2020) — learn **latent clusters** useful for predicting $z$, discovering both known and novel categories
+- But overall, probing remains limited to **hypothesis-driven** investigation
+
+**Contrast with Gurnee & Tegmark:**
+
+They had a clear hypothesis (space/time) but also explored **individual neurons** — discovering unexpected patterns like the "Trump era neuron" and "period token effect" that weren't part of the original hypothesis.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+predefinedViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Streetlight Effect in Probing");
+
+  // Flashlight metaphor: you only see what you illuminate
+  const cx = W/2, cy = 150;
+
+  // Dark area (unknown properties)
+  svg.append("rect").attr("x",30).attr("y",45).attr("width",W-60).attr("height",180).attr("rx",10)
+    .attr("fill",MZblack).attr("opacity",0.08);
+
+  // Spotlight cone
+  // Center of the dark rectangle
+  const ellipseY = 45 + 180/2; // = 135
+
+  svg.append("ellipse").attr("cx",cx).attr("cy",ellipseY).attr("rx",100).attr("ry",60)
+    .attr("fill",MZgold).attr("opacity",0.2);
+  
+  // Properties inside the light (known)
+  const known = ["POS tags","Syntax","Sentiment","Number","Tense"];
+  known.forEach((p,i) => {
+    const angle = (i / known.length) * Math.PI * 2 - Math.PI/2;
+    const r = 30 + (i%2)*25;
+    const x = cx + r * Math.cos(angle);
+    const y = ellipseY + r * 0.6 * Math.sin(angle);
+    svg.append("rect").attr("x",x-30).attr("y",y-9).attr("width",60).attr("height",18).attr("rx",9)
+      .attr("fill",MZgold).attr("opacity",0.3).attr("stroke",MZdkGold);
+    svg.append("text").attr("x",x).attr("y",y+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("font-size",7).attr("fill",MZblack).attr("font-weight",600).text(p);
+  });
+
+  // Properties in the dark (unknown)
+  const unknown = ["???","???","???","???","???","???"];
+  const darkPositions = [
+    {x:60,y:70},{x:370,y:80},{x:50,y:180},{x:380,y:170},{x:80,y:130},{x:360,y:120}
+  ];
+  darkPositions.forEach((pos,i) => {
+    svg.append("text").attr("x",pos.x).attr("y",pos.y)
+      .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZgray).attr("opacity",0.4)
+      .text("?");
+  });
+
+  // Probe = flashlight
+  svg.append("text").attr("x",cx).attr("y",50)
+    .attr("text-anchor","middle").attr("font-size",18).text("🔦");
+  svg.append("text").attr("x",cx).attr("y",35)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("Probe");
+
+  // Labels
+  svg.append("text").attr("x",cx).attr("y",240)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+    .text("You only find what you probe for.");
+
+  // Bottom: solutions
+  svg.append("text").attr("x",W/2).attr("y",270)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZdkGold).attr("font-weight",700)
+    .text("Complementary approaches:");
+
+  const solutions = [
+    "Unsupervised clustering (Michael et al.)",
+    "Individual neuron analysis (Gurnee & Tegmark)",
+    "PCA / feature visualization (DINOv3)",
+  ];
+  solutions.forEach((s,i) => {
+    svg.append("text").attr("x",W/2).attr("y",290+i*16)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray).text(s);
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## How Our Papers Handle Belinkov's Concerns {.smaller}
+
+```{ojs}
+//| echo: false
+auditViz = {
+  const W = 920, H = 420;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Auditing Our Papers Against Belinkov's Checklist");
+
+  const concerns = [
+    "Baselines & controls",
+    "Probe complexity",
+    "Causal evidence",
+    "Dataset confounds",
+    "Pre-defined properties",
+  ];
+
+  const papers = [
+    {name:"Alain & Bengio", checks:["partial","✓","✗","partial","✓"]},
+    {name:"Gurnee & Tegmark", checks:["✓","✓","✓","✓","partial"]},
+    {name:"DINOv3", checks:["✓","✓","partial","✓","✓"]},
+  ];
+
+  const checkColors = {"✓":"#2d8a4e", "✗":"#c0392b", "partial":MZdkGold};
+  const checkLabels = {"✓":"✓", "✗":"✗", "partial":"~"};
+
+  // Column headers (concerns)
+  const colW = 130, startX = 220, startY = 60;
+
+  concerns.forEach((c,i) => {
+    const x = startX + i * colW;
+    svg.append("text").attr("x",x+colW/2).attr("y",startY)
+      .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+      .text(c);
+  });
+
+  // Row headers (papers) and cells
+  papers.forEach((p,pi) => {
+    const y = startY + 40 + pi * 65;
+
+    // Paper name
+    svg.append("rect").attr("x",20).attr("y",y-16).attr("width",180).attr("height",32).attr("rx",6)
+      .attr("fill",MZblack).attr("stroke",MZgold);
+    svg.append("text").attr("x",110).attr("y",y+1).attr("text-anchor","middle")
+      .attr("dominant-baseline","middle").attr("fill",MZgold).attr("font-size",10).attr("font-weight",600)
+      .text(p.name);
+
+    // Check cells
+    p.checks.forEach((ch,ci) => {
+      const x = startX + ci * colW;
+      const color = checkColors[ch];
+      svg.append("rect").attr("x",x+colW/2-18).attr("y",y-14).attr("width",36).attr("height",28).attr("rx",6)
+        .attr("fill",color).attr("opacity",0.15).attr("stroke",color);
+      svg.append("text").attr("x",x+colW/2).attr("y",y+1).attr("text-anchor","middle")
+        .attr("dominant-baseline","middle").attr("font-size",14).attr("fill",color).attr("font-weight",700)
+        .text(checkLabels[ch]);
+    });
+  });
+
+  // Details below
+  const detY = 290;
+  const details = [
+    {paper:"Alain & Bengio", text:"Used random baselines and train/test split, but no control tasks (pre-Hewitt). Linear probes only. No causal claims."},
+    {paper:"Gurnee & Tegmark", text:"Linear vs MLP comparison, block holdout + cross-entity controls, neuron ablation (causal!), tested multiple model families."},
+    {paper:"DINOv3", text:"Compared against many baselines, linear probes only, per-layer analysis. No direct intervention — but evaluated across many tasks/datasets."},
+  ];
+
+  details.forEach((d,i) => {
+    const y = detY + i*35;
+    svg.append("text").attr("x",30).attr("y",y)
+      .attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",700).text(d.paper + ":");
+    svg.append("text").attr("x",180).attr("y",y)
+      .attr("font-size",8).attr("fill",MZgray).text(d.text);
+  });
+
+  // Legend
+  const legY = H - 25;
+  [["✓","Addressed","#2d8a4e"],["~","Partially","C4972A"],["✗","Not addressed","#c0392b"]].forEach((l,i) => {
+    const x = 250 + i*180;
+    svg.append("circle").attr("cx",x).attr("cy",legY).attr("r",8).attr("fill",l[2]).attr("opacity",0.2).attr("stroke",l[2]);
+    svg.append("text").attr("x",x).attr("y",legY+1).attr("text-anchor","middle")
+      .attr("dominant-baseline","middle").attr("font-size",10).attr("fill",l[2]).attr("font-weight",700).text(l[0]);
+    svg.append("text").attr("x",x+16).attr("y",legY+1)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text(l[1]);
+  });
+
+  return svg.node();
+}
+```
+
+
+## Belinkov's Recommendations {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**When designing a probing experiment:**
+
+1. **Define everything clearly** — original task, model, probing task, classifier
+2. **Set upper and lower bounds** — skyline model $\bar{f}$ and baseline $\underline{f}$
+3. **Use controls** — control tasks (word-level) or control datasets (sentence-level)
+4. **Consider probe complexity** — measure selectivity or MDL when extractability is the question
+5. **Perform interventions** when you want causal claims about what the model *uses*
+6. **Use parameter-free probes** when possible to avoid classifier confounds
+
+**What probing is good for:**
+
+- Making **relative claims** (model A encodes more of property z than model B)
+- Characterizing representations along **fine-grained properties**
+- Guiding model improvement (e.g., multi-task learning from probe insights)
+
+**What probing is NOT good for:**
+
+- **Absolute claims** about representation quality
+- **Causal claims** without interventions
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+recommendViz = {
+  const W = 440, H = 380;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Probing Experiment Checklist");
+
+  const steps = [
+    {label:"Define model f, task, property z", icon:"📋", status:"required"},
+    {label:"Set baselines f̲ and skylines f̄", icon:"📏", status:"required"},
+    {label:"Add control tasks or datasets", icon:"🎯", status:"recommended"},
+    {label:"Measure selectivity / MDL", icon:"📊", status:"recommended"},
+    {label:"Report accuracy–complexity trade-off", icon:"⚖️", status:"if designing new probes"},
+    {label:"Perform interventions", icon:"🔬", status:"for causal claims"},
+  ];
+
+  steps.forEach((s,i) => {
+    const y = 55 + i*52;
+    const t = i / (steps.length-1);
+
+    // Step box
+    svg.append("rect").attr("x",50).attr("y",y-14).attr("width",340).attr("height",30).attr("rx",6)
+      .attr("fill","white").attr("stroke", i<2 ? MZgold : i<4 ? MZdkGold : MZgray);
+
+    // Number circle
+    svg.append("circle").attr("cx",35).attr("cy",y+1).attr("r",12)
+      .attr("fill", i<2 ? MZgold : i<4 ? MZdkGold : MZgray);
+    svg.append("text").attr("x",35).attr("y",y+2)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill","white").attr("font-size",10).attr("font-weight",700)
+      .text(i+1);
+
+    // Icon + label
+    svg.append("text").attr("x",60).attr("y",y+2)
+      .attr("dominant-baseline","middle").attr("font-size",16).text(s.icon);
+    svg.append("text").attr("x",82).attr("y",y)
+      .attr("dominant-baseline","middle").attr("font-size",10).attr("fill",MZblack).attr("font-weight",600)
+      .text(s.label);
+
+    // Status tag
+    const tagColor = i<2 ? "#2d8a4e" : i<4 ? MZdkGold : MZgray;
+    svg.append("text").attr("x",82).attr("y",y+13)
+      .attr("font-size",7).attr("fill",tagColor).text(s.status);
+
+    // Connector
+    if(i < steps.length-1){
+      svg.append("line").attr("x1",35).attr("y1",y+13).attr("x2",35).attr("y2",y+38)
+        .attr("stroke",MZdkGold).attr("stroke-width",1).attr("stroke-dasharray","3,2");
+    }
+  });
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## From NLP to Vision: DINOv3 {.smaller}
+
+Everything so far — Alain & Bengio, Gurnee & Tegmark, Belinkov — focused on **NLP** and **classification** models. Can probing reveal structure in **vision** models too?
+
+::: {.columns}
+::: {.column width="50%"}
+
+**DINOv3** (2025) is a self-supervised Vision Transformer:
+
+- **7 billion parameters** (ViT-7B/16, actual count: 6.7B)
+- Trained with **no labels** — purely self-supervised (DINO + iBOT losses)
+- Data: curated web images + ImageNet (no annotations used, but data curation is sophisticated)
+- Learns both **global** (CLS token) and **dense** (patch tokens) features
+
+**The probing connection:**
+
+DINOv3 uses **linear probing** as its primary evaluation — the exact framework from Alain & Bengio!
+
+- **Classification:** Linear probe on CLS token → 88.4% on ImageNet
+- **Segmentation:** Linear probe on patch tokens → 55.9 mIoU on ADE20k
+- **Depth estimation:** Linear probe on patches → state-of-the-art RMSE
+
+If a linear probe can predict segmentation masks from frozen features, those features must encode rich spatial information **in a linearly separable way**.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+dinoIntroViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("DINOv3: Self-Supervised Vision at Scale");
+
+  // Architecture diagram
+  const steps = [
+    {y:55, label:"Image (1280×960)", sub:"No labels needed", color:MZgray},
+    {y:105, label:"ViT-7B/16 (frozen)", sub:"7 billion parameters", color:MZblack},
+    {y:155, label:"Patch features (80×60)", sub:"Dense representations", color:MZblack},
+    {y:205, label:"Linear probe", sub:"Alain & Bengio framework!", color:MZgold},
+  ];
+
+  steps.forEach((s,i) => {
+    const isEnd = i===0 || i===steps.length-1;
+    svg.append("rect").attr("x",W/2-100).attr("y",s.y-16).attr("width",200).attr("height",32).attr("rx",6)
+      .attr("fill",s.color).attr("stroke", isEnd ? MZdkGold : MZgold);
+    svg.append("text").attr("x",W/2).attr("y",s.y-2)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill", s.color===MZgold ? MZblack : (s.color===MZgray ? "white" : MZgold))
+      .attr("font-size",10).attr("font-weight",600).text(s.label);
+    svg.append("text").attr("x",W/2+110).attr("y",s.y)
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZgray).text(s.sub);
+
+    if(i < steps.length-1){
+      svg.append("line").attr("x1",W/2).attr("y1",s.y+16).attr("x2",W/2).attr("y2",steps[i+1].y-16)
+        .attr("stroke",MZdkGold).attr("stroke-width",1.5);
+    }
+  });
+
+  // Three output branches
+  const branches = [
+    {x:100, label:"Classify", metric:"88.4% top-1"},
+    {x:220, label:"Segment", metric:"55.9 mIoU"},
+    {x:340, label:"Depth", metric:"0.309 RMSE"},
+  ];
+
+  branches.forEach(b => {
+    svg.append("line").attr("x1",W/2).attr("y1",221).attr("x2",b.x).attr("y2",260)
+      .attr("stroke",MZdkGold).attr("stroke-width",1);
+    svg.append("rect").attr("x",b.x-45).attr("y",260).attr("width",90).attr("height",40).attr("rx",6)
+      .attr("fill","white").attr("stroke",MZdkGold);
+    svg.append("text").attr("x",b.x).attr("y",273)
+      .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+      .text(b.label);
+    svg.append("text").attr("x",b.x).attr("y",289)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZdkGold).attr("font-weight",600)
+      .text(b.metric);
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",325)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("All with a frozen backbone + simple linear layer — same idea as Alain & Bengio!");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## How DINOv3 is Trained {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Self-supervised objectives (no labels!):**
+
+- **DINO loss:** Student–teacher distillation on CLS tokens. Teacher is an EMA of the student.
+- **iBOT loss:** Masked patch prediction — student reconstructs masked patches using teacher's visible outputs
+- **DKoleo loss:** Regularizer to spread representations uniformly
+
+$$\mathcal{L}_{\text{Pre}} = \mathcal{L}_{\text{DINO}} + \mathcal{L}_{\text{iBOT}} + 0.1 \cdot \mathcal{L}_{\text{DKoleo}}$$
+
+**Key innovations over DINOv2:**
+
+- Scaled to **7B parameters** (ViT-7B with patch size 16)
+- **Constant learning rate** — no cosine schedule, train until performance plateaus
+- **Gram anchoring** — prevents feature collapse at scale by periodically realigning features
+- **RoPE-box jittering** — robust to different resolutions, scales, aspect ratios
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+trainingViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("Self-Supervised Training Pipeline");
+
+  // Student-teacher diagram
+  const sy = 80;
+  // Image input
+  svg.append("rect").attr("x",W/2-40).attr("y",45).attr("width",80).attr("height",24).attr("rx",5)
+    .attr("fill",MZgray);
+  svg.append("text").attr("x",W/2).attr("y",58).attr("text-anchor","middle")
+    .attr("dominant-baseline","middle").attr("fill","white").attr("font-size",9).attr("font-weight",600)
+    .text("Image crops");
+
+  // Student
+  svg.append("rect").attr("x",80).attr("y",sy).attr("width",120).attr("height",40).attr("rx",6)
+    .attr("fill",MZblack).attr("stroke",MZgold);
+  svg.append("text").attr("x",140).attr("y",sy+14).attr("text-anchor","middle")
+    .attr("fill",MZgold).attr("font-size",10).attr("font-weight",600).text("Student");
+  svg.append("text").attr("x",140).attr("y",sy+28).attr("text-anchor","middle")
+    .attr("fill",MZgold).attr("font-size",7).text("(global + local crops)");
+
+  // Teacher
+  svg.append("rect").attr("x",250).attr("y",sy).attr("width",120).attr("height",40).attr("rx",6)
+    .attr("fill",MZgold).attr("stroke",MZdkGold);
+  svg.append("text").attr("x",310).attr("y",sy+14).attr("text-anchor","middle")
+    .attr("fill",MZblack).attr("font-size",10).attr("font-weight",600).text("Teacher");
+  svg.append("text").attr("x",310).attr("y",sy+28).attr("text-anchor","middle")
+    .attr("fill",MZblack).attr("font-size",7).text("(EMA, global only)");
+
+  // EMA arrow
+  svg.append("line").attr("x1",200).attr("y1",sy+20).attr("x2",250).attr("y2",sy+20)
+    .attr("stroke",MZdkGold).attr("stroke-width",1.5).attr("stroke-dasharray","4,3");
+  svg.append("text").attr("x",225).attr("y",sy+12)
+    .attr("text-anchor","middle").attr("font-size",7).attr("fill",MZdkGold).text("EMA");
+
+  // Input arrows
+  svg.append("line").attr("x1",W/2-20).attr("y1",69).attr("x2",140).attr("y2",sy)
+    .attr("stroke",MZgray).attr("stroke-width",1);
+  svg.append("line").attr("x1",W/2+20).attr("y1",69).attr("x2",310).attr("y2",sy)
+    .attr("stroke",MZgray).attr("stroke-width",1);
+
+  // Three losses
+  const losses = [
+    {x:70, y:160, name:"L_DINO", desc:"CLS distillation", color:MZgold},
+    {x:220, y:160, name:"L_iBOT", desc:"Masked patches", color:MZdkGold},
+    {x:360, y:160, name:"L_DKoleo", desc:"Uniformity", color:MZgray},
+  ];
+
+  losses.forEach(l => {
+    svg.append("rect").attr("x",l.x-40).attr("y",l.y-12).attr("width",80).attr("height",24).attr("rx",12)
+      .attr("fill",l.color).attr("opacity",0.2).attr("stroke",l.color);
+    svg.append("text").attr("x",l.x).attr("y",l.y+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("font-size",9).attr("fill",MZblack).attr("font-weight",600).text(l.name);
+    svg.append("text").attr("x",l.x).attr("y",l.y+20)
+      .attr("text-anchor","middle").attr("font-size",7).attr("fill",MZgray).text(l.desc);
+  });
+
+  // Scale comparison
+  svg.append("text").attr("x",W/2).attr("y",210)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZblack).attr("font-weight",700)
+    .text("Scale Comparison");
+
+  const models = [
+    {name:"DINOv2", params:"1.1B", layers:40, dim:1536, patch:14, color:MZgray},
+    {name:"DINOv3", params:"6.7B", layers:40, dim:4096, patch:16, color:MZgold},
+  ];
+
+  const cols = ["Model","Params","Layers","Dim","Patch"];
+  cols.forEach((c,i) => {
+    svg.append("text").attr("x",70+i*85).attr("y",232)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZblack).attr("font-weight",700).text(c);
+  });
+
+  models.forEach((m,mi) => {
+    const y = 250 + mi*20;
+    const vals = [m.name, m.params, m.layers, m.dim, m.patch];
+    vals.forEach((v,vi) => {
+      svg.append("text").attr("x",70+vi*85).attr("y",y)
+        .attr("text-anchor","middle").attr("font-size",9)
+        .attr("fill", vi===0 ? m.color : MZblack)
+        .attr("font-weight", vi===0 ? 700 : 400).text(v);
+    });
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",305)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("6× more parameters, trained on curated web images — no labels used at any point.");
+
+  // Animated training progress
+  const progY = 325;
+  svg.append("rect").attr("x",60).attr("y",progY-4).attr("width",320).attr("height",8).attr("rx",4)
+    .attr("fill","#eee");
+  const progBar = svg.append("rect").attr("x",60).attr("y",progY-4).attr("height",8).attr("rx",4)
+    .attr("fill",MZgold);
+  svg.append("text").attr("x",60).attr("y",progY-10).attr("font-size",7).attr("fill",MZgray).text("0");
+  svg.append("text").attr("x",380).attr("y",progY-10).attr("text-anchor","end").attr("font-size",7).attr("fill",MZgray).text("1M iterations");
+
+  let frame = 0;
+  function anim(){
+    frame++;
+    const t = (frame % 400) / 400;
+    progBar.attr("width", t * 320);
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## SSL Closing the Gap {.smaller}
+
+Linear probing on ImageNet has been the standard evaluation for self-supervised models for years. DINOv3 finally closes the gap with supervised and weakly-supervised approaches.
+
+```{ojs}
+//| echo: false
+sslEvolution = {
+  const W = 920, H = 400;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("ImageNet Linear Probing Accuracy Over the Years (Figure 1)");
+
+  const padL = 80, padR = 40, padT = 45, padB = 70;
+  const xS = d3.scaleLinear().domain([2015, 2025]).range([padL, W-padR]);
+  const yS = d3.scaleLinear().domain([30, 92]).range([H-padB, padT]);
+
+  // Axes
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",W-padR).attr("y2",H-padB).attr("stroke",MZgray);
+  svg.append("line").attr("x1",padL).attr("y1",H-padB).attr("x2",padL).attr("y2",padT).attr("stroke",MZgray);
+
+  // Y ticks
+  [30,40,50,60,70,80,90].forEach(v => {
+    svg.append("line").attr("x1",padL-3).attr("y1",yS(v)).attr("x2",padL).attr("y2",yS(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",padL).attr("y1",yS(v)).attr("x2",W-padR).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",padL-8).attr("y",yS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v+"%");
+  });
+
+  // X ticks
+  [2015,2017,2019,2021,2023,2025].forEach(v => {
+    svg.append("text").attr("x",xS(v)).attr("y",H-padB+16).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",MZblack).text(v);
+  });
+
+  svg.append("text").attr("x",padL-45).attr("y",(padT+H-padB)/2)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${padL-45},${(padT+H-padB)/2})`).text("IN-1k Linear Probing Accuracy");
+
+  // Data points from Table 21
+  const supervised = [{x:2015,y:78.6},{x:2017,y:80.9},{x:2019,y:84.3},{x:2020,y:87.5},{x:2021,y:88.6},{x:2023,y:89.5}];
+  const weakly = [{x:2015,y:34.9},{x:2018,y:83.6},{x:2021,y:88.4},{x:2025,y:89.3}];
+  const ssl = [{x:2018,y:38.2},{x:2019,y:68.6},{x:2020,y:75.3},{x:2021,y:82.3},{x:2023,y:86.5},{x:2025,y:88.4}];
+
+  const lineFn = d3.line().curve(d3.curveMonotoneX);
+
+  // Draw lines
+  const slPts = supervised.map(d => [xS(d.x), yS(d.y)]);
+  const wslPts = weakly.map(d => [xS(d.x), yS(d.y)]);
+  const sslPts = ssl.map(d => [xS(d.x), yS(d.y)]);
+
+  const slPath = svg.append("path").attr("fill","none").attr("stroke",MZgray).attr("stroke-width",2);
+  const wslPath = svg.append("path").attr("fill","none").attr("stroke",MZdkGold).attr("stroke-width",2).attr("stroke-dasharray","6,3");
+  const sslPath = svg.append("path").attr("fill","none").attr("stroke",MZgold).attr("stroke-width",3);
+
+  // Dots
+  supervised.forEach(d => {
+    svg.append("circle").attr("cx",xS(d.x)).attr("cy",yS(d.y)).attr("r",4).attr("fill",MZgray);
+  });
+  weakly.forEach(d => {
+    svg.append("circle").attr("cx",xS(d.x)).attr("cy",yS(d.y)).attr("r",4).attr("fill",MZdkGold);
+  });
+  ssl.forEach(d => {
+    svg.append("circle").attr("cx",xS(d.x)).attr("cy",yS(d.y)).attr("r",5)
+      .attr("fill", d.x===2025 ? MZgold : MZgold).attr("stroke", d.x===2025 ? MZblack : "none")
+      .attr("stroke-width", d.x===2025 ? 2 : 0);
+  });
+
+  // DINOv3 label
+  svg.append("text").attr("x",xS(2025)+5).attr("y",yS(88.4)-10)
+    .attr("font-size",10).attr("fill",MZgold).attr("font-weight",700).text("DINOv3");
+
+  // Legend
+  const legY = H-30;
+  [{label:"Supervised (SL)", color:MZgray, dash:""},
+   {label:"Weakly-supervised (WSL)", color:MZdkGold, dash:"6,3"},
+   {label:"Self-supervised (SSL)", color:MZgold, dash:""}].forEach((l,i) => {
+    const x = 200 + i*240;
+    svg.append("line").attr("x1",x).attr("y1",legY).attr("x2",x+20).attr("y2",legY)
+      .attr("stroke",l.color).attr("stroke-width",2.5);
+    if(l.dash) svg.select("line:last-child").attr("stroke-dasharray",l.dash);
+    svg.append("text").attr("x",x+26).attr("y",legY+1)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text(l.label);
+  });
+
+  // Animated drawing
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 400;
+    const t = Math.min(1, (frame % period) / period * 1.2);
+    const slVis = Math.max(2, Math.ceil(t * slPts.length));
+    const wslVis = Math.max(2, Math.ceil(t * wslPts.length));
+    const sslVis = Math.max(2, Math.ceil(t * sslPts.length));
+
+    slPath.attr("d", lineFn(slPts.slice(0, slVis)));
+    wslPath.attr("d", lineFn(wslPts.slice(0, wslVis)));
+    sslPath.attr("d", lineFn(sslPts.slice(0, sslVis)));
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+**Key message:** SSL started far behind supervised learning, but DINOv3 now matches WSL (88.4% vs 89.3%). More importantly, SSL provides **superior dense features** — something supervised and weakly-supervised models can't match.
+
+
+## DINOv3: Beyond Dense Features {.smaller}
+
+Linear probing isn't just for dense tasks — DINOv3's **global** features (CLS token) are also state-of-the-art.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Classification (linear probe on CLS):**
+
+- **88.4%** on ImageNet-1k — best SSL model ever
+- **89.8%** on iNaturalist-2021 — beats even weakly-supervised models
+- Strong across scenes, textures, fine-grained categories
+
+**Instance retrieval (no training, just cosine similarity):**
+
+- Best on Oxford (+10.8 over DINOv2 on Met dataset)
+- Best on historical image matching (AmsterTime)
+
+**3D correspondence (non-parametric):**
+
+- **64.4%** recall on NAVI (geometric) — +4.3 over DINOv2
+- Shows deep 3D understanding without any 3D training data
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+beyondDenseViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("One Backbone, Many Evaluation Protocols");
+
+  // Central model
+  const cx = W/2, cy = 100;
+  svg.append("rect").attr("x",cx-60).attr("y",cy-20).attr("width",120).attr("height",40).attr("rx",8)
+    .attr("fill",MZblack).attr("stroke",MZgold).attr("stroke-width",2);
+  svg.append("text").attr("x",cx).attr("y",cy-3).attr("text-anchor","middle")
+    .attr("fill",MZgold).attr("font-size",12).attr("font-weight",700).text("DINOv3");
+  svg.append("text").attr("x",cx).attr("y",cy+12).attr("text-anchor","middle")
+    .attr("fill",MZgold).attr("font-size",7).text("Frozen 7B ViT");
+
+  // Branches
+  const branches = [
+    {x:70,  y:185, label:"Linear Probe", eval:"Classification", metric:"88.4%", sub:"IN-1k", protocol:"Alain & Bengio"},
+    {x:220, y:185, label:"Linear Probe", eval:"Segmentation", metric:"55.9", sub:"ADE20k mIoU", protocol:"Dense probing"},
+    {x:370, y:185, label:"Cosine Sim", eval:"Retrieval", metric:"+10.8", sub:"vs DINOv2", protocol:"Non-parametric"},
+  ];
+
+  branches.forEach(b => {
+    // Line from model
+    svg.append("line").attr("x1",cx).attr("y1",cy+20).attr("x2",b.x).attr("y2",b.y-28)
+      .attr("stroke",MZdkGold).attr("stroke-width",1.5);
+
+    // Protocol box
+    svg.append("rect").attr("x",b.x-55).attr("y",b.y-28).attr("width",110).attr("height",20).attr("rx",4)
+      .attr("fill",MZdkGold).attr("opacity",0.15).attr("stroke",MZdkGold);
+    svg.append("text").attr("x",b.x).attr("y",b.y-17).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZdkGold).attr("font-weight",600).text(b.label);
+
+    // Result card
+    svg.append("rect").attr("x",b.x-55).attr("y",b.y-2).attr("width",110).attr("height",60).attr("rx",6)
+      .attr("fill","white").attr("stroke",MZdkGold);
+    svg.append("text").attr("x",b.x).attr("y",b.y+13).attr("text-anchor","middle")
+      .attr("font-size",10).attr("fill",MZblack).attr("font-weight",700).text(b.eval);
+    svg.append("text").attr("x",b.x).attr("y",b.y+30).attr("text-anchor","middle")
+      .attr("font-size",16).attr("fill",MZgold).attr("font-weight",700).text(b.metric);
+    svg.append("text").attr("x",b.x).attr("y",b.y+46).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZgray).text(b.sub);
+  });
+
+  // Bottom: the probing connection
+  svg.append("rect").attr("x",40).attr("y",270).attr("width",W-80).attr("height",50).attr("rx",8)
+    .attr("fill","rgba(253,183,25,0.12)").attr("stroke",MZdkGold);
+  svg.append("text").attr("x",W/2).attr("y",288)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+    .text("All three protocols are forms of probing — from Alain & Bengio's");
+  svg.append("text").attr("x",W/2).attr("y",305)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZdkGold).attr("font-weight",600)
+    .text("linear classifiers to non-parametric methods (addressing Belinkov's concerns!)");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Seeing the Features: PCA Visualization {.smaller}
+
+One of DINOv3's most striking results: projecting dense patch features to 3D via PCA and mapping to RGB reveals **dramatically sharper** features than any competitor.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Method:** Take the frozen patch outputs (80×60 feature map), apply PCA to reduce to 3 dimensions, map to RGB.
+
+**What the visualizations show:**
+
+- **SigLIP 2 / PEspatial:** Noisy, fragmented feature maps — objects and boundaries are poorly defined
+- **DINOv2:** Better structure, but still contains noise and blurring
+- **DINOv3:** Crisp, semantically coherent regions — objects are clearly segmented, boundaries are sharp
+
+**Why this matters for probing:**
+
+If features are this well-organized spatially, it's no surprise a **linear** probe can predict segmentation masks. The features are already doing most of the work — the probe just reads them off.
+
+This is exactly what Alain & Bengio predicted: deeper, better models produce more linearly separable features.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+pcaQualViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("PCA Feature Quality (Figure 13 schematic)");
+
+  // Simulate feature quality as grid sharpness
+  const models = [
+    {name:"SigLIP 2", quality:0.15, y:55},
+    {name:"PEspatial", quality:0.25, y:115},
+    {name:"DINOv2", quality:0.55, y:175},
+    {name:"DINOv3", quality:0.95, y:235},
+  ];
+
+  function randn(){ let u=0,v=0; while(!u) u=Math.random(); while(!v) v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+  // Seed the RNG for consistency
+  let seed = 42;
+  function seededRandom(){ seed=(seed*16807)%2147483647; return (seed-1)/2147483646; }
+
+  models.forEach((m,mi) => {
+    // Model label
+    svg.append("text").attr("x",80).attr("y",m.y+17).attr("text-anchor","end")
+      .attr("font-size",9).attr("fill", mi===3 ? MZgold : MZblack)
+      .attr("font-weight", mi===3 ? 700 : 400).text(m.name);
+
+    // Simulated PCA grid (8x4 patches)
+    const gridX = 95, gridW = 240, gridH = 40;
+    const nx = 16, ny = 4;
+    const cellW = gridW/nx, cellH = gridH/ny;
+
+    // Generate "scene" — left half one color, right half another, with noise based on quality
+    for(let ix=0;ix<nx;ix++){
+      for(let iy=0;iy<ny;iy++){
+        const isLeft = ix < nx*0.45;
+        const isRight = ix > nx*0.55;
+        const isBorder = !isLeft && !isRight;
+
+        let r, g, b;
+        if(isLeft){
+          r = 180; g = 60; b = 60; // red-ish object
+        } else if(isRight){
+          r = 60; g = 120; b = 180; // blue-ish background
+        } else {
+          // border — sharper models show cleaner transition
+          const blend = m.quality;
+          r = 120; g = 90; b = 120;
+        }
+
+        // Add noise inversely proportional to quality
+        const noise = (1 - m.quality) * 80;
+        r = Math.max(0,Math.min(255, r + (seededRandom()-0.5)*noise*2));
+        g = Math.max(0,Math.min(255, g + (seededRandom()-0.5)*noise*2));
+        b = Math.max(0,Math.min(255, b + (seededRandom()-0.5)*noise*2));
+
+        svg.append("rect")
+          .attr("x", gridX + ix*cellW)
+          .attr("y", m.y + iy*cellH - 5)
+          .attr("width", cellW-0.5).attr("height", cellH-0.5)
+          .attr("fill", `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
+      }
+    }
+
+    // Quality bar
+    const barX = 350, barW = 60;
+    svg.append("rect").attr("x",barX).attr("y",m.y+5).attr("width",barW).attr("height",14).attr("rx",3)
+      .attr("fill","#eee");
+    svg.append("rect").attr("x",barX).attr("y",m.y+5).attr("width",barW*m.quality).attr("height",14).attr("rx",3)
+      .attr("fill", mi===3 ? MZgold : MZgray);
+    svg.append("text").attr("x",barX+barW+6).attr("y",m.y+13)
+      .attr("font-size",7).attr("fill",MZgray).text(mi===3 ? "Best" : "");
+  });
+
+  svg.append("text").attr("x",380).attr("y",50)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray).text("Sharpness");
+
+  svg.append("text").attr("x",W/2).attr("y",295)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack).attr("font-weight",600)
+    .text("DINOv3 features are sharper, less noisy, semantically coherent");
+
+  svg.append("text").attr("x",W/2).attr("y",315)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray)
+    .text("(See Figure 13 in paper for real PCA visualizations — the difference is dramatic)");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Object Discovery & Tracking: Parameter-Free Probing {.smaller}
+
+DINOv3 excels on tasks requiring **no learned probes at all** — just comparing raw patch vectors. This directly addresses Belinkov's concern about probe complexity.
+
+::: {.columns}
+::: {.column width="50%"}
+
+**Unsupervised object discovery (TokenCut):**
+
+No annotations, no training — just graph partitioning on patch feature similarities.
+
+| Method | VOC07 | VOC12 | COCO |
+|--------|-------|-------|------|
+| SigLIPv2 | 20.5 | 24.7 | 18.6 |
+| DINOv2 | 55.6 | 60.4 | 45.4 |
+| **DINOv3** | **66.1** | **69.5** | **55.1** |
+
+**Video tracking (DAVIS):**
+
+Propagate masks by matching patch features across frames — no fine-tuning on video.
+
+DINOv3 achieves **83.3 $\mathcal{J}\&\mathcal{F}$** on DAVIS-L — 6.7 points above DINOv2.
+
+**Connection to Belinkov:**
+
+These are **parameter-free probes** — no learned classifier $g$, so no risk of the probe memorizing. The structure is genuinely in the features.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+trackingViz = {
+  const W = 440, H = 340;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",22)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("No Probe Needed — Just Compare Patches");
+
+  // Show 3 frames with patches being matched
+  const frames = [
+    {x:70, label:"Frame 1"},
+    {x:220, label:"Frame 5"},
+    {x:370, label:"Frame 10"},
+  ];
+
+  frames.forEach((f,fi) => {
+    // Frame box
+    svg.append("rect").attr("x",f.x-50).attr("y",55).attr("width",100).attr("height",70).attr("rx",4)
+      .attr("fill","white").attr("stroke",MZdkGold);
+    svg.append("text").attr("x",f.x).attr("y",50)
+      .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZgray).text(f.label);
+
+    // Patch grid (5x3)
+    for(let px=0;px<5;px++){
+      for(let py=0;py<3;py++){
+        const isObject = (px>=1 && px<=3 && py>=0 && py<=1);
+        svg.append("rect")
+          .attr("x", f.x-45+px*18)
+          .attr("y", 60+py*20)
+          .attr("width",16).attr("height",18)
+          .attr("rx",1)
+          .attr("fill", isObject ? MZgold : "#ddd")
+          .attr("opacity", isObject ? 0.7 : 0.3);
+      }
+    }
+  });
+
+  // Matching arrows between frames
+  for(let fi=0;fi<2;fi++){
+    const x1 = frames[fi].x + 50;
+    const x2 = frames[fi+1].x - 50;
+    svg.append("line").attr("x1",x1).attr("y1",90).attr("x2",x2).attr("y2",90)
+      .attr("stroke",MZgold).attr("stroke-width",1.5).attr("stroke-dasharray","4,3");
+    svg.append("text").attr("x",(x1+x2)/2).attr("y",85)
+      .attr("text-anchor","middle").attr("font-size",7).attr("fill",MZdkGold).text("cosine sim");
+  }
+
+  // DAVIS results bar chart
+  svg.append("text").attr("x",W/2).attr("y",155)
+    .attr("text-anchor","middle").attr("font-size",11).attr("fill",MZblack).attr("font-weight",700)
+    .text("Video Tracking: DAVIS-L (J&F ↑)");
+
+  const trackData = [
+    {model:"SigLIPv2", jf:60.2, color:"#aaa"},
+    {model:"PEspatial", jf:70.8, color:"#bbb"},
+    {model:"DINOv2", jf:76.6, color:MZdkGold},
+    {model:"DINOv3", jf:83.3, color:MZgold},
+  ];
+
+  const bx0 = 100, bx1 = W-30;
+  const by0 = 170, barH = 22, barGap = 30;
+  const xS = d3.scaleLinear().domain([0, 90]).range([bx0, bx1]);
+
+  trackData.forEach((d,i) => {
+    const y = by0 + i*barGap;
+    const w = xS(d.jf) - bx0;
+
+    svg.append("rect").attr("x",bx0).attr("y",y).attr("width",w).attr("height",barH).attr("rx",3)
+      .attr("fill",d.color).attr("opacity", d.model==="DINOv3" ? 1 : 0.7);
+
+    svg.append("text").attr("x",bx0-6).attr("y",y+barH/2+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(d.model);
+
+    svg.append("text").attr("x",bx0+w+6).attr("y",y+barH/2+1)
+      .attr("dominant-baseline","middle").attr("font-size",9)
+      .attr("fill", d.model==="DINOv3" ? MZdkGold : MZgray).attr("font-weight",600)
+      .text(d.jf.toFixed(1));
+  });
+
+  // Bottom note connecting to Belinkov
+  svg.append("rect").attr("x",40).attr("y",300).attr("width",W-80).attr("height",28).attr("rx",6)
+    .attr("fill","rgba(253,183,25,0.12)").attr("stroke",MZdkGold);
+  svg.append("text").attr("x",W/2).attr("y",317)
+    .attr("text-anchor","middle").attr("font-size",8).attr("fill",MZblack)
+    .text("No classifier g learned → avoids Belinkov's concerns about probe complexity entirely");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+## Dense Linear Probing Results {.smaller}
+
+DINOv3 dramatically outperforms all baselines on dense prediction tasks using **only linear probes** on frozen features.
+
+```{ojs}
+//| echo: false
+denseProbeViz = {
+  const W = 920, H = 420;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",14).attr("fill",MZblack).attr("font-weight",700)
+    .text("Dense Linear Probing: Segmentation (mIoU ↑) & Depth (RMSE ↓)");
+
+  // Segmentation data (left chart)
+  const segData = [
+    {model:"SigLIPv2",    ade:42.7, voc:72.7, type:"weak", color:"#aaa"},
+    {model:"PEcore",       ade:38.9, voc:69.2, type:"weak", color:"#bbb"},
+    {model:"DINOv2",       ade:49.5, voc:83.1, type:"self", color:MZdkGold},
+    {model:"AM-RADIOv2.5", ade:53.0, voc:85.4, type:"agg",  color:MZgray},
+    {model:"DINOv3",       ade:55.9, voc:86.6, type:"self", color:MZgold},
+  ];
+
+  // LEFT: ADE20k segmentation
+  const lx0 = 80, lx1 = 440;
+  const ly0 = 45, ly1 = H-80;
+  const yS = d3.scaleLinear().domain([0, 60]).range([ly1, ly0]);
+
+  svg.append("line").attr("x1",lx0).attr("y1",ly1).attr("x2",lx1).attr("y2",ly1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",lx0).attr("y1",ly1).attr("x2",lx0).attr("y2",ly0).attr("stroke",MZgray);
+
+  [0,10,20,30,40,50,60].forEach(v => {
+    svg.append("line").attr("x1",lx0-3).attr("y1",yS(v)).attr("x2",lx0).attr("y2",yS(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",lx0).attr("y1",yS(v)).attr("x2",lx1).attr("y2",yS(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",lx0-6).attr("y",yS(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v);
+  });
+
+  svg.append("text").attr("x",(lx0+lx1)/2).attr("y",ly0-8)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",600)
+    .text("ADE20k Segmentation (mIoU ↑)");
+
+  svg.append("text").attr("x",lx0-30).attr("y",(ly0+ly1)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${lx0-30},${(ly0+ly1)/2})`).text("mIoU");
+
+  const barW = (lx1-lx0)/segData.length * 0.6;
+  const barGap = (lx1-lx0)/segData.length;
+
+  segData.forEach((d,i) => {
+    const cx = lx0 + i*barGap + barGap/2;
+    const h = ly1 - yS(d.ade);
+
+    svg.append("rect").attr("x",cx-barW/2).attr("y",yS(d.ade))
+      .attr("width",barW).attr("height",h).attr("rx",2)
+      .attr("fill",d.color).attr("opacity", d.model==="DINOv3" ? 1 : 0.7);
+
+    svg.append("text").attr("x",cx).attr("y",yS(d.ade)-6).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",d.color).attr("font-weight",600)
+      .text(d.ade.toFixed(1));
+
+    svg.append("text").attr("x",cx).attr("y",ly1+14).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZblack).text(d.model);
+  });
+
+  // RIGHT: Depth estimation (NYUv2 RMSE, lower is better)
+  const depthData = [
+    {model:"SigLIPv2",    rmse:0.494, color:"#aaa"},
+    {model:"PEcore",       rmse:0.590, color:"#bbb"},
+    {model:"DINOv2",       rmse:0.372, color:MZdkGold},
+    {model:"AM-RADIOv2.5", rmse:0.340, color:MZgray},
+    {model:"DINOv3",       rmse:0.309, color:MZgold},
+  ];
+
+  const rx0 = 520, rx1 = W-30;
+  const ySD = d3.scaleLinear().domain([0, 0.7]).range([ly1, ly0]);
+
+  svg.append("line").attr("x1",rx0).attr("y1",ly1).attr("x2",rx1).attr("y2",ly1).attr("stroke",MZgray);
+  svg.append("line").attr("x1",rx0).attr("y1",ly1).attr("x2",rx0).attr("y2",ly0).attr("stroke",MZgray);
+
+  [0,0.1,0.2,0.3,0.4,0.5,0.6].forEach(v => {
+    svg.append("line").attr("x1",rx0-3).attr("y1",ySD(v)).attr("x2",rx0).attr("y2",ySD(v)).attr("stroke","#ccc");
+    svg.append("line").attr("x1",rx0).attr("y1",ySD(v)).attr("x2",rx1).attr("y2",ySD(v)).attr("stroke","#eee");
+    svg.append("text").attr("x",rx0-6).attr("y",ySD(v)+1).attr("text-anchor","end")
+      .attr("dominant-baseline","middle").attr("font-size",8).attr("fill",MZblack).text(v.toFixed(1));
+  });
+
+  svg.append("text").attr("x",(rx0+rx1)/2).attr("y",ly0-8)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",600)
+    .text("NYUv2 Depth Estimation (RMSE ↓)");
+
+  svg.append("text").attr("x",rx0-30).attr("y",(ly0+ly1)/2)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZblack)
+    .attr("transform",`rotate(-90,${rx0-30},${(ly0+ly1)/2})`).text("RMSE");
+
+  const barWD = (rx1-rx0)/depthData.length * 0.6;
+  const barGapD = (rx1-rx0)/depthData.length;
+
+  depthData.forEach((d,i) => {
+    const cx = rx0 + i*barGapD + barGapD/2;
+    const h = ly1 - ySD(d.rmse);
+
+    svg.append("rect").attr("x",cx-barWD/2).attr("y",ySD(d.rmse))
+      .attr("width",barWD).attr("height",h).attr("rx",2)
+      .attr("fill",d.color).attr("opacity", d.model==="DINOv3" ? 1 : 0.7);
+
+    svg.append("text").attr("x",cx).attr("y",ySD(d.rmse)-6).attr("text-anchor","middle")
+      .attr("font-size",9).attr("fill",d.color).attr("font-weight",600)
+      .text(d.rmse.toFixed(3));
+
+    svg.append("text").attr("x",cx).attr("y",ly1+14).attr("text-anchor","middle")
+      .attr("font-size",7).attr("fill",MZblack).text(d.model);
+  });
+
+  // Legend
+  const legY = H-40;
+  const legItems = [
+    {label:"Weakly-supervised", color:"#aaa"},
+    {label:"Self-supervised", color:MZdkGold},
+    {label:"Agglomerative", color:MZgray},
+    {label:"DINOv3 (self-supervised)", color:MZgold},
+  ];
+  legItems.forEach((l,i) => {
+    const x = 100 + i*210;
+    svg.append("rect").attr("x",x).attr("y",legY-5).attr("width",14).attr("height",10).attr("rx",2)
+      .attr("fill",l.color);
+    svg.append("text").attr("x",x+18).attr("y",legY+1)
+      .attr("dominant-baseline","middle").attr("font-size",9).attr("fill",MZblack).text(l.label);
+  });
+
+  svg.append("text").attr("x",W/2).attr("y",H-10)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZgray)
+    .text("DINOv3 achieves state-of-the-art on both tasks with just a linear layer on frozen features.");
+
+  return svg.node();
+}
+```
+
+
+## Per-Layer Analysis: Where Does Information Live? {.smaller}
+
+Just like Alain & Bengio's layer-by-layer probing of CNNs, DINOv3 can be probed at **every transformer layer**.
+
+::: {.columns}
+::: {.column width="55%"}
+
+```{ojs}
+//| echo: false
+layerViz = {
+  const W = 520, H = 400;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",20)
+    .attr("text-anchor","middle").attr("font-size",13).attr("fill",MZblack).attr("font-weight",700)
+    .text("DINOv3 7B: Performance by Layer (Figure 21)");
+
+  const tasks = [
+    {title:"Classification (IN-1k)", yMax:90, unit:"%",
+     data:[18,25,35,48,58,65,70,74,77,79,80,81,82,83,84,84.5,85,85.5,86,86.5,87,87,87.2,87.5,87.6,87.8,87.9,88,88,88.1,88.1,88.2,88.2,88.3,88.3,88.3,88.4,88.4,88.4,88.4,88.4],
+     color:MZgold, row:0},
+    {title:"Segmentation (ADE20k mIoU)", yMax:60, unit:"",
+     data:[5,8,12,18,24,28,32,35,38,40,42,43,44,45,46,47,48,49,50,51,52,52.5,53,53.5,54,54,54.5,55,55,55.2,55.3,55.4,55.5,55.5,55.6,55.6,55.7,55.7,55.8,55.8,55.9],
+     color:MZdkGold, row:1},
+    {title:"Depth (NYU RMSE ↓)", yMax:1.0, unit:"", invert:true,
+     data:[0.95,0.88,0.78,0.68,0.60,0.55,0.50,0.46,0.43,0.41,0.39,0.38,0.37,0.36,0.355,0.35,0.345,0.34,0.335,0.33,0.325,0.32,0.318,0.315,0.312,0.310,0.309,0.309,0.310,0.312,0.315,0.318,0.32,0.325,0.33,0.335,0.34,0.345,0.35,0.355,0.36],
+     color:"#1971c2", row:2},
+  ];
+
+  const nLayers = 41;
+  const cW = 440, cH = 85;
+  const padL = 50, padR = 20;
+  const startY = 35;
+  const lineFn = d3.line().curve(d3.curveMonotoneX);
+
+  const allAnimPaths = [];
+
+  tasks.forEach(task => {
+    const cy0 = startY + task.row * (cH + 30);
+    const cy1 = cy0 + cH;
+
+    const xS = d3.scaleLinear().domain([0, nLayers-1]).range([padL, padL+cW]);
+    const yS = d3.scaleLinear().domain([0, task.yMax]).range([cy1, cy0]);
+
+    // Axes
+    svg.append("line").attr("x1",padL).attr("y1",cy1).attr("x2",padL+cW).attr("y2",cy1).attr("stroke","#ccc");
+    svg.append("line").attr("x1",padL).attr("y1",cy1).attr("x2",padL).attr("y2",cy0).attr("stroke","#ccc");
+
+    // Title
+    svg.append("text").attr("x",padL+cW/2).attr("y",cy0-5)
+      .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).attr("font-weight",600)
+      .text(task.title);
+
+    // Y ticks
+    const yTicks = task.invert ? [0, 0.2, 0.4, 0.6, 0.8, 1.0] : 
+                   task.yMax === 90 ? [0, 30, 60, 90] : [0, 20, 40, 60];
+    yTicks.forEach(v => {
+      svg.append("text").attr("x",padL-5).attr("y",yS(v)+1).attr("text-anchor","end")
+        .attr("dominant-baseline","middle").attr("font-size",7).attr("fill",MZgray)
+        .text(task.invert ? v.toFixed(1) : v);
+    });
+
+    // Data curve
+    const pts = task.data.map((v,i) => [xS(i), yS(v)]);
+    const path = svg.append("path")
+      .attr("fill","none").attr("stroke",task.color).attr("stroke-width",2.5);
+    allAnimPaths.push({path, pts});
+
+    // Best layer marker
+    const bestIdx = task.invert ? task.data.indexOf(Math.min(...task.data)) : task.data.indexOf(Math.max(...task.data));
+    svg.append("circle").attr("cx",xS(bestIdx)).attr("cy",yS(task.data[bestIdx])).attr("r",4)
+      .attr("fill",task.color).attr("stroke","white").attr("stroke-width",1);
+  });
+
+  // X axis label
+  svg.append("text").attr("x",padL+cW/2).attr("y",H-8)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).text("Layer →");
+
+  [0,10,20,30,40].forEach(v => {
+    const x = d3.scaleLinear().domain([0,40]).range([padL, padL+cW])(v);
+    svg.append("text").attr("x",x).attr("y",startY + 3*(cH+30)-5)
+      .attr("text-anchor","middle").attr("font-size",7).attr("fill",MZgray).text(v);
+  });
+
+  // Animation: draw curves progressively
+  let frame = 0;
+  function anim(){
+    frame++;
+    const period = 300;
+    const t = (frame % period) / period;
+    const visPts = Math.max(2, Math.floor(t * nLayers));
+
+    allAnimPaths.forEach(({path, pts}) => {
+      path.attr("d", lineFn(pts.slice(0, visPts)));
+    });
+
+    requestAnimationFrame(anim);
+  }
+  anim();
+
+  return svg.node();
+}
+```
+
+:::
+::: {.column width="45%"}
+
+**Key observations:**
+
+**Classification & Segmentation** — performance increases **smoothly** across layers, matching Alain & Bengio's monotonic separability finding.
+
+**Depth estimation** — peaks around **layer 32** then slightly declines. Geometric information lives in **earlier layers** than semantic information.
+
+**This mirrors the Alain & Bengio pattern:** deeper = better for the task, but **which layer is best depends on what you probe for**.
+
+**Scale matters:** DINOv3 (7B) significantly outperforms DINOv2 (1B), echoing Gurnee & Tegmark's finding that larger models learn richer representations.
+
+:::
+:::
+
+
+## The Full Story: Probing Across Domains {.smaller}
+
+::: {.columns}
+::: {.column width="50%"}
+
+**The arc of this presentation:**
+
+**Alain & Bengio (2016)** — Invented linear probing. Showed monotonic separability in vision models (CNNs).
+
+**Gurnee & Tegmark (2024)** — Extended probes to LLMs. Found linear representations of space and time, plus causal evidence via neuron ablation.
+
+**Belinkov (2022)** — Critically reviewed the framework. Showed we need controls, selectivity, and interventions to make valid claims.
+
+**DINOv3 (2025)** — Applied linear probing to self-supervised vision transformers at scale. With just a linear layer, frozen features predict segmentation, depth, and more — the ultimate vindication of the probing idea.
+
+**The thread:** A simple idea — attach a linear classifier to intermediate representations — has become one of the most important tools in deep learning interpretability, spanning NLP, vision, and beyond.
+
+:::
+::: {.column width="50%"}
+
+```{ojs}
+//| echo: false
+summaryViz = {
+  const W = 440, H = 380;
+  const MZgold = "#F1B82D", MZblack = "#000000", MZdkGold = "#C4972A";
+  const MZltGray = "#F5F2EB", MZgray = "#4A4A4A";
+
+  const svg = d3.create("svg")
+    .attr("viewBox",`0 0 ${W} ${H}`)
+    .style("width","100%").style("max-width",`${W}px`)
+    .style("font-family","system-ui, sans-serif");
+
+  svg.append("rect").attr("width",W).attr("height",H)
+    .attr("rx",10).attr("fill",MZltGray).attr("stroke",MZdkGold);
+
+  svg.append("text").attr("x",W/2).attr("y",24)
+    .attr("text-anchor","middle").attr("font-size",12).attr("fill",MZblack).attr("font-weight",700)
+    .text("The Probing Timeline");
+
+  const papers = [
+    {y:60, year:"2016", label:"Alain & Bengio", domain:"Vision (CNN)", contribution:"Linear probes invented", color:MZgray},
+    {y:125, year:"2022", label:"Belinkov", domain:"NLP (survey)", contribution:"Framework formalized + critique", color:"#1971c2"},
+    {y:190, year:"2024", label:"Gurnee & Tegmark", domain:"LLMs", contribution:"Space/time representations", color:MZdkGold},
+    {y:255, year:"2025", label:"DINOv3", domain:"Vision (ViT)", contribution:"Dense probing at scale", color:MZgold},
+  ];
+
+  // Timeline line
+  svg.append("line").attr("x1",55).attr("y1",50).attr("x2",55).attr("y2",280)
+    .attr("stroke",MZdkGold).attr("stroke-width",2);
+
+  papers.forEach((p,i) => {
+    // Year dot
+    svg.append("circle").attr("cx",55).attr("cy",p.y).attr("r",8)
+      .attr("fill",p.color).attr("stroke","white").attr("stroke-width",2);
+    svg.append("text").attr("x",55).attr("y",p.y+1)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("fill","white").attr("font-size",6).attr("font-weight",700).text(p.year);
+
+    // Card
+    svg.append("rect").attr("x",80).attr("y",p.y-22).attr("width",340).attr("height",44).attr("rx",6)
+      .attr("fill","white").attr("stroke",p.color).attr("stroke-width",1.5);
+    svg.append("text").attr("x",92).attr("y",p.y-7)
+      .attr("font-size",11).attr("fill",MZblack).attr("font-weight",700).text(p.label);
+    svg.append("text").attr("x",92).attr("y",p.y+9)
+      .attr("font-size",9).attr("fill",MZgray).text(p.contribution);
+
+    // Domain tag
+    svg.append("rect").attr("x",310).attr("y",p.y-12).attr("width",100).attr("height",20).attr("rx",10)
+      .attr("fill",p.color).attr("opacity",0.15).attr("stroke",p.color);
+    svg.append("text").attr("x",360).attr("y",p.y)
+      .attr("text-anchor","middle").attr("dominant-baseline","middle")
+      .attr("font-size",7).attr("fill",p.color).attr("font-weight",600).text(p.domain);
+  });
+
+  // Bottom message
+  svg.append("text").attr("x",W/2).attr("y",315)
+    .attr("text-anchor","middle").attr("font-size",10).attr("fill",MZblack).attr("font-weight",600)
+    .text("One idea → Multiple domains → Deeper understanding");
+
+  svg.append("text").attr("x",W/2).attr("y",340)
+    .attr("text-anchor","middle").attr("font-size",9).attr("fill",MZgray)
+    .text("Linear probing: the thermometer of deep learning");
+
+  return svg.node();
+}
+```
+
+:::
+:::
+
+
+
+
 ##  {data-background-image="assets/tigerstripes.png" data-background-size="cover" data-background-position="center"}
 
 <div class="thankyou-slide">
@@ -3103,3 +5275,4 @@ Thank you for your attention!
 </div>
 
 </div>
+
